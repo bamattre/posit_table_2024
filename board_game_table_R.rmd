@@ -1,0 +1,253 @@
+---
+title: Posit Table Contest - Board Games
+author: Richard Bamattre
+date: "2024-05-22"
+output: html_notebook
+---
+
+**Purpose**
+
+Create a potentially useful table to browse Board Game data
+
+**Description**
+
+Inspired by trying to find age appropriate yet challenging games to play with my kids
+
+**Data Sources**
+
+Board Game Geek data via Tidy Tuesday
+
+*Other Notes*
+
+
+
+*Change log*
+
+
+```{r setup}
+## Load libraries
+
+# read
+
+# explore
+
+# wrangle
+library(tidyverse) # key packages - remove if not using
+library(lubridate)
+library(janitor)
+
+# viz
+library(reactable) # powerful library for interactive tables
+library(reactablefmtr) # reactable themes and more
+
+# model
+
+# export
+
+## Custom functions
+
+# xml/html to text
+
+unescape_html <- function(str){
+  xml2::xml_text(xml2::read_html(paste0("<x>", str, "</x>")))
+}
+
+# If not using a project, set the working directory to where the markdown
+# script is located:
+
+#setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+# Read
+
+```{r read}
+ratings <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/ratings.csv')
+
+details <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/details.csv')
+```
+
+# Wrangle
+
+```{r wrangle}
+games <- details |> 
+  select(-num) |> 
+  left_join(ratings |> select(-num), by = "id") |> 
+  mutate(description2 = map_chr(description, unescape_html) |> # remove xml
+           str_remove_all("\\\n") |> # remove line breaks
+           str_trunc(width = 1000) # limit description for table
+           ) |> 
+  # maybe just get first publisher?
+  mutate(across(boardgamecategory:boardgamepublisher, 
+                ~ str_remove_all(., "\\[|\\]|\\'"))) |> 
+  mutate(boardgamepublisher1 = str_remove_all(boardgamepublisher, "\\,.*")) |> 
+  mutate(artist = str_trunc(boardgameartist, width = 50)) |> 
+  mutate(full_url = paste0("https://boardgamegeek.com", url))
+
+# check to see if any games didn't match on id
+games |> filter(is.na(rank)) |> nrow() 
+```
+
+```{r}
+output <- games |> 
+  arrange(rank) |> 
+  filter(playingtime <= 480) |> # filter very long games (not very common)
+  slice(1:5000) |> 
+    # create ranks within the sample (so #1 is present)
+  mutate(rank_wish = min_rank(desc(wishing)),
+         rank_pop = min_rank(desc(owned))) |> 
+  select(`Rank` = rank,
+         `Wish` = rank_wish,
+         `Pop` = rank_pop,
+         thumbnail,
+         Game = primary,
+         Category = boardgamecategory,
+         Year = yearpublished,
+         `Players (min/max)` = minplayers,
+         MaxPlayers = maxplayers,
+         `Playing Time` = playingtime,
+         `Min Age` = minage,
+         description,
+         id)
+```
+
+```{r}
+# adapted code for star rating to indicate min/max players:
+# https://glin.github.io/reactable/articles/cookbook/cookbook.html?q=icon#rating-stars
+
+library(htmltools)
+
+players <- function(min = min_players, max = max_players) {
+  person_icon <- function(empty = FALSE) {
+    tagAppendAttributes(shiny::icon("person"),
+      style = paste("color:", if (empty) "darkgray" else "black"),
+      "aria-hidden" = "true"
+    )
+  }
+  players <- lapply(seq_len(max), function(i) {
+    if (i <= min) person_icon() else person_icon(empty = TRUE)
+  })
+  label <- sprintf("%s-%s players", min, max)
+  div(title = label, role = "img", players)
+}
+
+```
+
+```{r}
+# create a tooltip - according to reactable cookbook
+
+with_tooltip <- function(value, tooltip) {
+  tags$abbr(style = "text-decoration: underline; text-decoration-style: dotted; cursor: help",
+            title = tooltip, value)
+}
+
+```
+
+
+
+# Table
+
+```{r table}
+game_table <- reactable(output,
+          theme = nytimes(),
+          searchable = TRUE,
+          columns = list(
+            Rank = colDef(#style = color_scales(output, 
+                          #                     colors = viridis::magma(100, direction = -1)),
+                          cell = color_tiles(output,
+                                             colors = viridis::magma(100, direction = -1)),
+                          header = with_tooltip("Rank", "Board Game Geek rank"),
+                          maxWidth = 55),
+            `Wish` = colDef(cell = color_tiles(output,
+                                             colors = c('white', 'black')),
+                            header = with_tooltip("Wish", "How many users wishlisted the game"),
+                          maxWidth = 55),
+            `Pop` = colDef(cell = color_tiles(output,
+                                             colors = c('white', 'black')),
+                           header = with_tooltip("Pop", "How many users own the game"),
+                          maxWidth = 55),
+            Game = colDef(searchable = TRUE, html = TRUE, cell = function(value, index) {
+              url <- games[games$id == output$id[index],]$full_url
+              # create a link to the board game geek site for that particular game
+              sprintf('<a href="%s" target="_blank" style="color: black">%s</a>', url, value)
+            }),
+            thumbnail = colDef(cell = embed_img(height = 50, width = 45),
+                               maxWidth = 80,
+                               name = ""),
+            Category = colDef(
+              style = cell_style(font_color = "darkgray"),
+              searchable = TRUE,
+              filterable = TRUE,
+              ),
+            `Players (min/max)` = colDef(
+              cell = function(value, index) players(min = value, max =
+                                                           output$MaxPlayers[index]),
+              filterable = TRUE,
+              header = with_tooltip("Players (min/max)", "Min players in black, max in gray. Filter by min players"),
+              maxWidth = 80),
+                # use custom function to show min/max players
+            MaxPlayers = colDef(show = FALSE),
+            description = colDef(show = FALSE, searchable = TRUE),
+            id = colDef(show = FALSE),
+              # hide Max players and id (just used for custom visual and details)
+            `Playing Time` = colDef(
+              align = "right",
+              cell = gauge_chart(output, max_value = 480, 
+                                 number_fmt = scales::label_timespan(unit = "mins"),
+                                 fill_color = viridis::plasma(10, direction = -1)),
+              filterable = TRUE,
+              # filter by time to include games that are faster too (max time)
+              filterMethod = JS("
+                function(rows, columnId, filterValue) {
+                  return rows.filter(function(row) {
+                    return row.values[columnId] <= filterValue
+                  })
+                }"),
+              header = with_tooltip("Playing Time", "Filter by playing time (minutes) or faster"),
+              maxWidth = 80
+            ),
+            `Min Age` = colDef(
+              cell = data_bars(output,
+                               text_position = "inside-base",
+                               fill_color = c("#edf8b1","#7fcdbb","#2c7fb8"),
+                               #text_color = "gray",
+                               max_value = 25),
+              filterable = TRUE,
+              # filter by min age to include ages below
+              filterMethod = JS("
+                function(rows, columnId, filterValue) {
+                  return rows.filter(function(row) {
+                    return row.values[columnId] <= filterValue
+                  })
+                }"),
+              header = with_tooltip("Min Age", "Filter by minimum age and younger"),
+              maxWidth = 80)
+            ),
+          defaultColDef = colDef(vAlign = "center", headerVAlign = "bottom"),
+          details = function(index) {
+            publisher <- games[games$id == output$id[index],] |> 
+              select(Designer = boardgamedesigner,
+                     Artist = artist,
+                     Publisher = boardgamepublisher1)
+            detail_data <- games[games$id == output$id[index],] |> 
+              select(Description = description2)
+            div(style = "padding: 1rem",
+                reactable(detail_data, sortable = FALSE),
+                reactable(publisher, sortable = FALSE))
+          }
+          ) |> 
+  google_font("Nunito") |> 
+  add_title("Top Ranked Board Games") |> 
+  add_subtitle("Find your new favorite board game!", font_weight = "normal",
+               font_size = 16) |> 
+  add_source("github.com/bamattre | Source: Board Game Geek",
+             font_size = 12) # 
+  # add_legend(output,
+  #            col_name = "Rank",
+  #            colors = viridis::magma(100, direction = -1),
+  #            title = "Rank",
+  #            align = "left")
+
+#game_table
+
+save_reactable_test(game_table, "game_table_5k.html")
+```
